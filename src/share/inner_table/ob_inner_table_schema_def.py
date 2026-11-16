@@ -2446,6 +2446,68 @@ all_ai_model_endpoint_def = dict(
 )
 def_table_schema(**all_ai_model_endpoint_def)
 
+# Persistent AI column definitions are keyed by the user-visible result column.
+# The three hidden column IDs refer to the per-row generation state, request
+# identity, and result specification stored in the owning user table.
+# 1131: __all_ai_column
+def_table_schema(
+    owner = 'seekdb-ai-column',
+    table_name = '__all_ai_column',
+    table_id = '1131',
+    table_type = 'SYSTEM_TABLE',
+    gm_columns = ['gmt_create', 'gmt_modified'],
+    rowkey_columns = [
+        ('table_id', 'int'),
+        ('column_id', 'int')
+    ],
+    is_cluster_private = False,
+    meta_record_in_sys = False,
+    normal_columns = [
+        ('column_name', 'varchar:OB_MAX_COLUMN_NAME_LENGTH', 'false'),
+        ('normalized_expr', 'longtext', 'false'),
+        ('dependencies', 'longtext', 'false'),
+        ('model_name', 'varchar:128', 'false'),
+        ('result_type', 'int', 'false'),
+        ('embedding_dim', 'int', 'false', '0'),
+        ('sync_mode', 'varchar:16', 'false', 'async'),
+        ('max_retries', 'int', 'false', '0'),
+        ('definition_version', 'int', 'false'),
+        ('state_column_id', 'int', 'false'),
+        ('request_column_id', 'int', 'false'),
+        ('result_spec_column_id', 'int', 'false')
+    ]
+)
+
+# An AI request is made durable by the DML transaction before a worker can
+# claim it. request_id and definition_version are required when publishing to
+# reject late results from superseded data or schema definitions.
+# 1132: __all_ai_column_task
+def_table_schema(
+    owner = 'seekdb-ai-column',
+    table_name = '__all_ai_column_task',
+    table_id = '1132',
+    table_type = 'SYSTEM_TABLE',
+    gm_columns = ['gmt_create', 'gmt_modified'],
+    rowkey_columns = [
+        ('table_id', 'int'),
+        ('column_id', 'int'),
+        ('request_id', 'varchar:128')
+    ],
+    is_cluster_private = False,
+    meta_record_in_sys = False,
+    normal_columns = [
+        ('rowkey_predicate', 'longtext', 'false'),
+        ('generation_id', 'varchar:128', 'false'),
+        ('definition_version', 'int', 'false'),
+        ('state', 'int', 'false'),
+        ('retry_count', 'int', 'false', '0'),
+        ('eligible_ts', 'timestamp', 'true'),
+        ('claimed_by', 'varchar:128', 'true'),
+        ('claimed_ts', 'timestamp', 'true'),
+        ('last_error', 'longtext', 'true')
+    ]
+)
+
 
 all_objauth_mysql_def = dict(
     owner = 'cjl476581',
