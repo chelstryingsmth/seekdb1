@@ -1,0 +1,55 @@
+name: FTS submission validation
+on:
+  pull_request:
+    branches: [2026-competition]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential rpm rpm2cpio cpio m4 libtool-bin libncurses5 wget default-mysql-client
+      - name: Build seekdb
+        run: bash build.sh release --init --make -j2
+      - name: Start dedicated test instance
+        run: |
+          python3 .github/script/seekdb/sdb.py start --binary build_release/src/observer/seekdb --base-dir "$RUNNER_TEMP/fts-instance"
+          python3 .github/script/seekdb/sdb.py wait-ready --client mysql --base-dir "$RUNNER_TEMP/fts-instance" --timeout 300
+      - name: Check IK regression results
+        shell: bash
+        run: |
+          set -euo pipefail
+          mysql -h127.0.0.1 -P2881 -uroot -N -s -A --default-character-set=utf8mb4 < tools/deploy/mysql_test/test_suite/fts_index/t/ik_char_classification.test | tee /tmp/ik-results
+          test "$(wc -l < /tmp/ik-results)" -eq 5
+          test "$(grep -cx 1 /tmp/ik-results)" -eq 5
+      - name: Run unchanged full competition benchmark
+        env:
+          MYSQL: mysql -h127.0.0.1 -P2881 -uroot -N -s -A --default-character-set=utf8mb4
+          MYSQL_VERBOSE: mysql -h127.0.0.1 -P2881 -uroot -A --default-character-set=utf8mb4
+          LABEL: candidate
+          ROWS: 20000
+          BATCH: 500
+          ROUNDS: 3000
+          QUERY_ROUNDS: 200
+          SAMPLES: 3
+          WARMUP: 30
+          SKIP_LOAD: 0
+          OUTPUT: /tmp/fts-report.txt
+        run: |
+          bash tools/benchmark/fts_large_bench.sh
+          python3 tools/benchmark/fts_large_bench_score.py /tmp/fts-report.txt | tee /tmp/fts-score.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fts-validation
+          path: |
+            /tmp/ik-results
+            /tmp/fts-report.txt
+            /tmp/fts-score.txt
+            ${{ runner.temp }}/fts-instance/log/

@@ -1,0 +1,8 @@
+# owner group: storage
+# IK character category regression: separators must preserve full token/frequency output.
+SET NAMES utf8mb4;
+SELECT TOKENIZE('hello world', 'ik', '[{"output":"all"}]') = TOKENIZE('hello!world', 'ik', '[{"output":"all"}]') AS ascii_separator;
+SELECT TOKENIZE('12345 67890', 'ik', '[{"output":"all"}]') = TOKENIZE('12345!67890', 'ik', '[{"output":"all"}]') AS digits_separator;
+SELECT TOKENIZE('中国 数据库', 'ik', '[{"output":"all"}]') = TOKENIZE('中国！数据库', 'ik', '[{"output":"all"}]') AS cjk_separator;
+SELECT TOKENIZE('あいうえお 가나', 'ik', '[{"output":"all"}]') = TOKENIZE('あいうえお！가나', 'ik', '[{"output":"all"}]') AS other_cjk_separator;
+SELECT TOKENIZE('hello world', 'ik', '[{"output":"all"}]') = TOKENIZE('hello😀world', 'ik', '[{"output":"all"}]') AS supplementary_separator;

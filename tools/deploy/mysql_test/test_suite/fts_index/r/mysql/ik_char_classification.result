@@ -1,0 +1,16 @@
+SET NAMES utf8mb4;
+SELECT TOKENIZE('hello world', 'ik', '[{"output":"all"}]') = TOKENIZE('hello!world', 'ik', '[{"output":"all"}]') AS ascii_separator;
+ascii_separator
+1
+SELECT TOKENIZE('12345 67890', 'ik', '[{"output":"all"}]') = TOKENIZE('12345!67890', 'ik', '[{"output":"all"}]') AS digits_separator;
+digits_separator
+1
+SELECT TOKENIZE('中国 数据库', 'ik', '[{"output":"all"}]') = TOKENIZE('中国！数据库', 'ik', '[{"output":"all"}]') AS cjk_separator;
+cjk_separator
+1
+SELECT TOKENIZE('あいうえお 가나', 'ik', '[{"output":"all"}]') = TOKENIZE('あいうえお！가나', 'ik', '[{"output":"all"}]') AS other_cjk_separator;
+other_cjk_separator
+1
+SELECT TOKENIZE('hello world', 'ik', '[{"output":"all"}]') = TOKENIZE('hello😀world', 'ik', '[{"output":"all"}]') AS supplementary_separator;
+supplementary_separator
+1
