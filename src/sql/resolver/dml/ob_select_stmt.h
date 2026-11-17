@@ -115,8 +115,11 @@ struct SelectItem
 
 struct ObSelectIntoItem
 {
+  bool is_file_copy_;
+  bool copy_header_;
+  common::ObString copy_null_text_;
   ObSelectIntoItem()
-      : into_type_(),
+      : is_file_copy_(false), copy_header_(false), into_type_(),
         outfile_name_(),
         field_str_(),
         line_str_(),

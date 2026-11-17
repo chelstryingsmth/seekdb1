@@ -27,16 +27,31 @@ namespace sql
 {
 
 class ObExpr;
+struct FileTableScanState;
 class ObFunctionTableSpec : public ObOpSpec
 {
 OB_UNIS_VERSION_V(1);
 public:
   ObFunctionTableSpec(common::ObIAllocator &alloc, const ObPhyOperatorType type)
-    : ObOpSpec(alloc, type), value_expr_(nullptr), column_exprs_(alloc), has_correlated_expr_(false)
+    : ObOpSpec(alloc, type), value_expr_(nullptr), column_exprs_(alloc), has_correlated_expr_(false), is_file_table_(false), file_format_(0), file_header_(true), file_delimiter_(','), file_quote_(34), file_escape_(34), file_column_count_(0), file_size_(0), file_mtime_(0), file_device_(0), file_identity_(0), file_changed_(0), file_changed_fraction_(0), file_column_indices_(alloc), file_column_names_(alloc)
   {}
   ObExpr *value_expr_;
   common::ObFixedArray<ObExpr*, common::ObIAllocator> column_exprs_;
   bool has_correlated_expr_;
+  bool is_file_table_;
+  int64_t file_format_;
+  bool file_header_;
+  int64_t file_delimiter_;
+  int64_t file_quote_;
+  int64_t file_escape_;
+  common::ObString file_null_text_;
+  int64_t file_column_count_;
+  uint64_t file_size_;
+  int64_t file_mtime_;
+  uint64_t file_device_, file_identity_;
+  int64_t file_changed_, file_changed_fraction_;
+  common::ObFixedArray<int64_t, common::ObIAllocator> file_column_indices_;
+  common::ObFixedArray<common::ObString, common::ObIAllocator> file_column_names_;
 };
 
 class ObFunctionTableOp : public ObOperator
@@ -44,6 +59,7 @@ class ObFunctionTableOp : public ObOperator
 public:
   ObFunctionTableOp(ObExecContext &exec_ctx, const ObOpSpec &spec, ObOpInput *input)
     : ObOperator(exec_ctx, spec, input),
+    file_scan_(nullptr),
     node_idx_(0),
     already_calc_(false),
     row_count_(0),
@@ -58,6 +74,10 @@ public:
   virtual int inner_close() override;
   virtual void destroy() override;
 private:
+  int open_file_scan();
+  int inner_get_next_file_row();
+  void close_file_scan();
+  FileTableScanState *file_scan_;
   int inner_get_next_row_udf();
   int inner_get_next_row_sys_func();
   int get_current_result(common::ObObj &result);

@@ -15,6 +15,8 @@
  */
 
 #define USING_LOG_PREFIX SQL_RESV
+#include "sql/engine/basic/file_sql/csv_output.h"
+#include "sql/resolver/file_sql_constants.h"
 #include "sql/resolver/dml/ob_select_resolver.h"
 #include "sql/resolver/dml/ob_del_upd_resolver.h"
 #include "share/ob_time_utility2.h"
@@ -2986,6 +2988,85 @@ int ObSelectResolver::resolve_into_file_node(const ParseNode *list_node, ObSelec
   return ret;
 }
 
+
+int ObSelectResolver::resolve_file_copy(const ParseNode *node, ObSelectIntoItem &item)
+{
+  int ret = OB_SUCCESS;
+  bool enabled = false;
+  ObString allowed;
+  if (OB_FAIL(session_info_->get_sys_variable(share::SYS_VAR_ENABLE_FILE_SQL,enabled))) {
+  } else if (!enabled) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_USER_ERROR(OB_NOT_SUPPORTED,"COPY requires enable_file_sql=ON");
+  } else if (OB_FAIL(session_info_->get_secure_file_priv(allowed))) {
+  } else if (OB_FAIL(resolve_into_const_node(node->children_[0],item.outfile_name_))) {
+  } else {
+    try {
+      file_sql::CsvOutputOptions options;
+      bool header = false;
+      const ParseNode *list = node->children_[1];
+      std::set<std::string> used;
+      for (int64_t i = 0; list != nullptr && i < list->num_child_; ++i) {
+        const ParseNode *option = list->children_[i];
+        if (option == nullptr || option->num_child_ != 2 || option->children_[0] == nullptr
+            || option->children_[1] == nullptr) { throw std::invalid_argument("invalid COPY option"); }
+        const ParseNode *key = option->children_[0];
+        const ParseNode *value = file_sql::bound_constant(params_,option->children_[1]);
+        std::string name(key->str_value_,key->str_len_);
+        for (char &ch : name) { if (ch >= 'A' && ch <= 'Z') { ch += 'a'-'A'; } }
+        if (!used.insert(name).second) { throw std::invalid_argument("duplicate COPY option"); }
+        if (name == "format" && value->str_value_ != nullptr
+            && ObString(static_cast<int32_t>(value->str_len_),value->str_value_).case_compare("csv") == 0) {
+        } else if (name == "header" && (value->type_ == T_BOOL || (value->type_ == T_INT && (value->value_ == 0 || value->value_ == 1)))) { header = value->value_ != 0; }
+        else if ((name == "delimiter" || name == "delim" || name == "quote" || name == "escape")
+                 && value->type_ == T_VARCHAR && value->str_len_ == 1) {
+          if (name == "delimiter" || name == "delim") { options.delimiter = value->str_value_[0]; }
+          else if (name == "quote") { options.quote = value->str_value_[0]; }
+          else { options.escape = value->str_value_[0]; }
+        } else if (name == "nullstr" && value->type_ == T_VARCHAR && value->str_len_ <= 1024) {
+          options.null_text.assign(value->str_value_,value->str_len_);
+        } else { throw std::invalid_argument("unsupported COPY option"); }
+      }
+      const auto valid_char = [](char ch) { return ch > 0 && ch < 127 && ch != '\r' && ch != '\n'; };
+      if (!valid_char(options.delimiter) || !valid_char(options.quote) || !valid_char(options.escape)
+          || options.delimiter == options.quote || !file_sql::valid_utf8(options.null_text)
+          || options.null_text.find_first_of(std::string{options.delimiter,options.quote,'\r','\n'}) != std::string::npos) {
+        throw std::invalid_argument("invalid COPY CSV options");
+      }
+      const ObString destination = item.outfile_name_.get_string();
+      const auto path = file_sql::authorize_glob(file_sql::path_from_utf8(std::string(destination.ptr(),destination.length())),
+                         file_sql::path_from_utf8(std::string(allowed.ptr(),allowed.length())));
+      if (std::filesystem::exists(path)) { throw std::invalid_argument("COPY destination already exists"); }
+      ObString copied;
+      const std::string path_text = file_sql::utf8_path_text(path);
+      ObString source(static_cast<int32_t>(path_text.size()),path_text.data());
+      OZ (ob_write_string(*allocator_,source,copied));
+      item.outfile_name_.set_varchar(copied);
+      const auto copy_char = [&](char ch, ObObj &object) {
+        ObString original(1,&ch), saved;
+        int result = ob_write_string(*allocator_,original,saved);
+        if (OB_SUCC(result)) { object.set_varchar(saved); }
+        return result;
+      };
+      OZ (copy_char(options.delimiter,item.field_str_));
+      OZ (copy_char(options.quote,item.closed_cht_));
+      OZ (copy_char(options.escape,item.escaped_cht_));
+      ObString null_text(static_cast<int32_t>(options.null_text.size()),options.null_text.data());
+      OZ (ob_write_string(*allocator_,null_text,item.copy_null_text_));
+      item.is_file_copy_ = true;
+      item.copy_header_ = header;
+      item.is_single_ = true;
+      item.cs_type_ = CS_TYPE_UTF8MB4_BIN;
+      get_stmt()->get_query_ctx()->has_file_sql_ = true;
+    } catch (const std::exception &error) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("COPY binding failed",K(ret),"detail",error.what());
+      LOG_USER_ERROR(OB_INVALID_ARGUMENT,error.what());
+    }
+  }
+  return ret;
+}
+
 int ObSelectResolver::resolve_into_outfile_with_format(const ParseNode *node, ObSelectIntoItem &into_item)
 {
   int ret = OB_SUCCESS;
@@ -3105,7 +3186,9 @@ int ObSelectResolver::resolve_into_clause(const ParseNode *node)
       new(into_item) ObSelectIntoItem();
       into_item->into_type_ = node->type_;
       if (T_INTO_OUTFILE == node->type_) { // into outfile
-        if (is_in_set_query()) {
+        if (node->value_ == 1) {
+          ret = resolve_file_copy(node,*into_item);
+        } else if (is_in_set_query()) {
           ret = OB_INAPPROPRIATE_INTO;
         } else if (node->num_child_ == 3 && NULL != node->children_[1]
             && T_EXTERNAL_FILE_FORMAT == node->children_[1]->type_) { // Handle with `FORMAT`

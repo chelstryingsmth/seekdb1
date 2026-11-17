@@ -556,6 +556,7 @@ public:
       ab_param_exprs_(),
       fetch_cur_time_(true),
       is_contain_virtual_table_(false),
+      has_file_sql_(false),
       is_contain_inner_table_(false),
       is_contain_select_for_update_(false),
       has_dml_write_stmt_(false),
@@ -598,6 +599,7 @@ public:
     calculable_items_.reset();
     fetch_cur_time_ = true;
     is_contain_virtual_table_ = false;
+    has_file_sql_ = false;
     is_contain_inner_table_ = false;
     is_contain_select_for_update_ = false;
     has_dml_write_stmt_ = false;
@@ -678,6 +680,7 @@ public:
   common::ObSArray<share::schema::ObSchemaObjVersion> global_dependency_tables_;
   bool fetch_cur_time_;
   bool is_contain_virtual_table_;
+  bool has_file_sql_;
   bool is_contain_inner_table_;
   bool is_contain_select_for_update_;
   bool has_dml_write_stmt_;

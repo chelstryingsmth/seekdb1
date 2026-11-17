@@ -5486,6 +5486,21 @@ int ObStaticEngineCG::generate_spec(ObLogSelectInto &op, ObSelectIntoSpec &spec,
       spec.cs_type_ = op.get_cs_type();
       spec.parallel_ = op.get_parallel();
       spec.is_overwrite_ = op.get_is_overwrite();
+      const ObSelectStmt *copy_stmt = static_cast<const ObSelectStmt *>(op.get_stmt());
+      const ObSelectIntoItem *copy = copy_stmt->get_select_into();
+      if (copy != nullptr && copy->is_file_copy_) {
+        spec.is_file_copy_ = true;
+        spec.copy_header_ = copy->copy_header_;
+        OZ (ob_write_string(alloc,copy->copy_null_text_,spec.copy_null_text_));
+        OZ (spec.copy_column_names_.init(op.get_select_exprs().count()));
+        for (int64_t i = 0; OB_SUCC(ret) && i < op.get_select_exprs().count(); ++i) {
+          const SelectItem &item = copy_stmt->get_select_items().at(i);
+          const ObString &name = item.alias_name_.empty() ? item.expr_name_ : item.alias_name_;
+          ObString saved;
+          OZ (ob_write_string(alloc,name,saved));
+          OZ (spec.copy_column_names_.push_back(saved));
+        }
+      }
       spec.plan_->need_drive_dml_query_ = true;
     }
   }
@@ -5511,6 +5526,34 @@ int ObStaticEngineCG::generate_spec(ObLogFunctionTable &op, ObFunctionTableSpec 
   } else {
     spec.has_correlated_expr_ = value_raw_expr->has_flag(CNT_DYNAMIC_PARAM);
     spec.value_expr_ = value_expr;
+    const TableItem *file_item = op.get_stmt()->get_table_item_by_id(op.get_table_id());
+    if (file_item != nullptr && file_item->is_file_table_) {
+      spec.is_file_table_ = true;
+      spec.file_format_ = file_item->file_format_;
+      spec.file_header_ = file_item->file_header_;
+      spec.file_delimiter_ = file_item->file_delimiter_;
+      spec.file_quote_ = file_item->file_quote_;
+      spec.file_escape_ = file_item->file_escape_;
+      OZ (ob_write_string(alloc,file_item->file_null_text_,spec.file_null_text_));
+      spec.file_size_ = file_item->file_size_;
+      spec.file_mtime_ = file_item->file_mtime_;
+      spec.file_device_ = file_item->file_device_; spec.file_identity_ = file_item->file_identity_;
+      spec.file_changed_ = file_item->file_changed_; spec.file_changed_fraction_ = file_item->file_changed_fraction_;
+      OZ (spec.file_column_indices_.init(op.get_stmt()->get_column_size()));
+      OZ (spec.file_column_names_.init(op.get_stmt()->get_column_size()));
+      for (int64_t i = 0; OB_SUCC(ret) && i < op.get_stmt()->get_column_size(); ++i) {
+        const ColumnItem *column = op.get_stmt()->get_column_item(i);
+        if (column->table_id_ == op.get_table_id()) {
+          ++spec.file_column_count_;
+          if (column->expr_->is_explicited_reference()) {
+            OZ (spec.file_column_indices_.push_back(column->column_id_ - OB_APP_MIN_COLUMN_ID));
+            ObString copied_name;
+            OZ (ob_write_string(alloc, column->column_name_, copied_name));
+            OZ (spec.file_column_names_.push_back(copied_name));
+          }
+        }
+      }
+    }
     for (int64_t i = 0; OB_SUCC(ret) && i < op.get_output_exprs().count(); ++i) {
       if (OB_FAIL(mark_expr_self_produced(op.get_output_exprs().at(i)))) {
       }
@@ -5720,6 +5763,10 @@ int ObStaticEngineCG::set_properties_post(const ObLogPlan &log_plan, ObPhysicalP
     }
     phy_plan.set_affected_last_insert_id(log_plan.get_stmt()->get_affected_last_insert_id());
     phy_plan.set_is_contain_virtual_table(log_plan.get_stmt()->get_query_ctx()->is_contain_virtual_table_);
+    if (log_plan.get_stmt()->get_query_ctx()->has_file_sql_) {
+      // File schemas must be inferred again for each request, including DESCRIBE.
+      phy_plan.get_phy_plan_hint().plan_cache_policy_ = OB_USE_PLAN_CACHE_NONE;
+    }
     phy_plan.set_is_contain_inner_table(log_plan.get_stmt()->get_query_ctx()->is_contain_inner_table_);
     phy_plan.set_is_affect_found_row(log_plan.get_stmt()->is_affect_found_rows());
     phy_plan.set_has_top_limit(log_plan.get_stmt()->has_top_limit());

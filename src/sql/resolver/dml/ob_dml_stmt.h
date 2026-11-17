@@ -150,6 +150,15 @@ struct TableItem
     snapshot_query_expr_ = nullptr;
     snapshot_query_type_ = SnapshotQueryType::NOT_USING;
     function_table_expr_ = nullptr;
+    is_file_table_ = false;
+    file_format_ = 0;
+    file_header_ = true;
+    file_delimiter_ = ',';
+    file_quote_ = 34;
+    file_escape_ = 34;
+    file_size_ = 0;
+    file_mtime_ = 0;
+    file_device_ = 0; file_identity_ = 0; file_changed_ = 0; file_changed_fraction_ = 0;
     ddl_schema_version_ = 0;
     ddl_table_id_ = common::OB_INVALID_ID;
     json_table_def_ = nullptr;
@@ -293,6 +302,17 @@ struct TableItem
   ObRawExpr *snapshot_query_expr_;
   SnapshotQueryType snapshot_query_type_;
   ObRawExpr *function_table_expr_;
+  bool is_file_table_;
+  int64_t file_format_;
+  bool file_header_;
+  int64_t file_delimiter_;
+  int64_t file_quote_;
+  int64_t file_escape_;
+  common::ObString file_null_text_;
+  uint64_t file_size_;
+  int64_t file_mtime_;
+  uint64_t file_device_, file_identity_;
+  int64_t file_changed_, file_changed_fraction_;
   int64_t ddl_schema_version_;
   int64_t ddl_table_id_;
   // table partition

@@ -17,6 +17,8 @@
 #define USING_LOG_PREFIX SQL_RESV
 #include "sql/resolver/ddl/ob_explain_resolver.h"
 #include "sql/resolver/ob_resolver.h"
+#include "sql/parser/ob_parser.h"
+#include <string>
 
 using namespace oceanbase;
 using namespace sql;
@@ -26,9 +28,89 @@ const static int64_t EXPLAIN_DISPLAY_OPTION = 1;
 const static int64_t EXPLAIN_INTO_TABLE = 2;
 const static int64_t EXPLAIN_STMT_ID = 3;
 const static int64_t EXPLAIN_CHILD_STMT = 4;
+
+static bool has_file_table_node(const ParseNode *node, unsigned depth)
+{
+  if (node == nullptr || depth > 64) { return false; }
+  if (node->type_ == T_TABLE_COLLECTION_EXPRESSION && node->value_ == 1 && node->num_child_ == 3) { return true; }
+  for (int64_t i = 0; i < node->num_child_; ++i) {
+    if (has_file_table_node(node->children_[i],depth+1)) { return true; }
+  }
+  return false;
+}
+
+static std::string file_describe_literal(const ObString &value)
+{
+  const char *digits = "0123456789abcdef";
+  std::string result = "CONVERT(X'";
+  for (int32_t i = 0; i < value.length(); ++i) {
+    const unsigned char ch = static_cast<unsigned char>(value.ptr()[i]);
+    result.push_back(digits[ch >> 4]); result.push_back(digits[ch & 15]);
+  }
+  return result+"' USING utf8mb4)";
+}
+
+int ObExplainResolver::resolve_file_describe(const ParseNode &parse_tree)
+{
+  int ret = OB_SUCCESS;
+  ObStmt *resolved = nullptr;
+  ObResolver child_resolver(params_);
+  if (OB_FAIL(child_resolver.resolve(ObResolver::IS_NOT_PREPARED_STMT,
+              *parse_tree.children_[EXPLAIN_CHILD_STMT],resolved))) {
+  } else if (resolved == nullptr || !resolved->is_select_stmt()) {
+    ret = OB_INVALID_ARGUMENT;
+  } else {
+    try {
+      const auto *select = static_cast<ObSelectStmt *>(resolved);
+      std::string text = "SELECT column_name,column_type,`null`,`key`,`default`,extra FROM (";
+      const auto &items = select->get_select_items();
+      for (int64_t i = 0; i < items.count(); ++i) {
+        if (i != 0) { text += " UNION ALL "; }
+        const SelectItem &item = items.at(i);
+        const ObString &name = item.alias_name_.empty() ? item.expr_name_ : item.alias_name_;
+        const char *type = "VARCHAR";
+        switch (item.expr_->get_data_type()) {
+          case ObNullType: type = "NULL"; break;
+          case ObTinyIntType: type = "BOOLEAN"; break;
+          case ObIntType: type = "BIGINT"; break;
+          case ObDoubleType: type = "DOUBLE"; break;
+          case ObDateType: type = "DATE"; break;
+          case ObDateTimeType: type = "DATETIME"; break;
+          default: break;
+        }
+        const bool not_null = item.expr_->get_result_type().has_result_flag(NOT_NULL_FLAG);
+        text += "SELECT "+file_describe_literal(name)+" AS column_name,'"+type+"' AS column_type,'"
+             +(not_null ? "NO" : "YES")+"' AS `null`,NULL AS `key`,NULL AS `default`,NULL AS extra,"
+             +std::to_string(i)+" AS ordinal";
+      }
+      text += ") AS schema_rows ORDER BY ordinal";
+      ObParser parser(*allocator_,session_info_->get_sql_mode(),session_info_->get_charsets4parser());
+      ParseResult parsed;
+      const ObString sql(static_cast<int32_t>(text.size()),text.data());
+      ObStmt *metadata_stmt = nullptr;
+      ObResolver metadata_resolver(params_);
+      if (OB_FAIL(parser.parse(sql,parsed))) {
+      } else if (parsed.result_tree_ == nullptr || parsed.result_tree_->num_child_ < 1) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (OB_FAIL(metadata_resolver.resolve(ObResolver::IS_NOT_PREPARED_STMT,
+                       *parsed.result_tree_->children_[0],metadata_stmt))) {
+      } else {
+        set_basic_stmt(metadata_stmt);
+      }
+    } catch (const std::exception &) { ret = OB_ALLOCATE_MEMORY_FAILED; }
+  }
+  return ret;
+}
+
 int ObExplainResolver::resolve(const ParseNode &parse_tree)
 {
   int ret = OB_SUCCESS;
+  if (parse_tree.str_len_ == 8 && parse_tree.str_value_ != nullptr
+      && MEMCMP(parse_tree.str_value_, "describe", 8) == 0 && parse_tree.num_child_ == 5
+      && parse_tree.children_[0] == nullptr && parse_tree.children_[1] == nullptr
+      && has_file_table_node(parse_tree.children_[EXPLAIN_CHILD_STMT],0)) {
+    return resolve_file_describe(parse_tree);
+  }
   ObExplainStmt *explain_stmt = NULL;
   if (!(T_EXPLAIN == parse_tree.type_  && 5 == parse_tree.num_child_)) {
     ret = OB_ERR_UNEXPECTED;

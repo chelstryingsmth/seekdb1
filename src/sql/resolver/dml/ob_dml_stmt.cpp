@@ -163,6 +163,17 @@ int TableItem::deep_copy(ObIRawExprCopier &expr_copier,
                          ObIAllocator* allocator)
 {
   int ret = OB_SUCCESS;
+  is_file_table_ = other.is_file_table_;
+  file_format_ = other.file_format_;
+  file_header_ = other.file_header_;
+  file_delimiter_ = other.file_delimiter_;
+  file_quote_ = other.file_quote_;
+  file_escape_ = other.file_escape_;
+  file_null_text_ = other.file_null_text_;
+  file_size_ = other.file_size_;
+  file_mtime_ = other.file_mtime_;
+  file_device_ = other.file_device_; file_identity_ = other.file_identity_;
+  file_changed_ = other.file_changed_; file_changed_fraction_ = other.file_changed_fraction_;
   table_id_ = other.table_id_;
   table_name_ = other.table_name_;
   alias_name_ = other.alias_name_;

@@ -16,6 +16,11 @@
 
 #define USING_LOG_PREFIX SQL_RESV
 #include "config_bridge.h"
+#include "sql/engine/basic/file_sql/jsonl_reader.h"
+#include "sql/engine/basic/file_sql/secure_input.h"
+#include "sql/engine/basic/file_sql/glob_reader.h"
+#include "sql/engine/basic/file_sql/parquet_reader.h"
+#include "sql/resolver/file_sql_constants.h"
 #include "ob_dml_resolver.h"
 #include "sql/resolver/dml/ob_view_table_resolver.h"
 #include "sql/optimizer/ob_optimizer_util.h"
@@ -2698,7 +2703,11 @@ int ObDMLResolver::resolve_table(const ParseNode &parse_tree,
         if (OB_ISNULL(session_info_)) {
           ret = OB_INVALID_ARGUMENT;
         }
-        OZ (resolve_function_table_item(*table_node, table_item));
+        if (table_node->value_ == 1 && table_node->num_child_ == 3) {
+          OZ (resolve_file_table_item(*table_node, table_item));
+        } else {
+          OZ (resolve_function_table_item(*table_node, table_item));
+        }
         break;
       }
       case T_JSON_TABLE_EXPRESSION: {
@@ -3676,6 +3685,164 @@ int ObDMLResolver::unnest_table_add_column(TableItem *&table_item, ColumnItem *&
 
   return ret;
 }
+
+int ObDMLResolver::resolve_file_table_item(const ParseNode &node, TableItem *&table_item)
+{
+  int ret = OB_SUCCESS;
+  bool enabled = false;
+  ObString allowed;
+  TableItem *item = nullptr;
+  ObConstRawExpr *path_expr = nullptr;
+  const ParseNode *args = node.children_[1];
+  const ParseNode *name_node = node.children_[0];
+  const ParseNode *alias = node.children_[2];
+  ObString name(static_cast<int32_t>(name_node->str_len_), name_node->str_value_);
+  if (OB_FAIL(session_info_->get_sys_variable(share::SYS_VAR_ENABLE_FILE_SQL, enabled))) {
+  } else if (!enabled) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "file SQL is disabled; set enable_file_sql=ON");
+  } else if (name.case_compare("read_csv") != 0 && name.case_compare("read_json") != 0
+             && name.case_compare("read_ndjson") != 0 && name.case_compare("glob") != 0 && name.case_compare("read_parquet") != 0) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "this file table function");
+  } else if (args == nullptr || args->num_child_ < 1 || args->children_[0] == nullptr
+             || (args->children_[0]->type_ != T_VARCHAR && args->children_[0]->type_ != T_QUESTIONMARK)) {
+    ret = OB_INVALID_ARGUMENT;
+  } else if (OB_FAIL(session_info_->get_secure_file_priv(allowed))) {
+  } else {
+    try {
+      const bool glob = name.case_compare("glob") == 0;
+      const bool parquet = name.case_compare("read_parquet") == 0;
+      const bool jsonl = name.case_compare("read_json") == 0 || name.case_compare("read_ndjson") == 0;
+      bool header = true;
+      char delimiter = ',';
+      char quote = 34, escape = 34;
+      std::string null_text;
+      for (int64_t i = 1; i < args->num_child_; ++i) {
+        const ParseNode *option = args->children_[i];
+        if (option == nullptr || option->type_ != T_OP_EQ || option->num_child_ != 2) {
+          ret = OB_ERR_PARSER_SYNTAX;
+          break;
+        }
+        const ParseNode *key = option->children_[0];
+        const ParseNode *value = file_sql::bound_constant(params_,option->children_[1]);
+        if (key == nullptr || value == nullptr || glob || parquet) { throw std::invalid_argument("invalid file option"); }
+        if (key->type_ == T_COLUMN_REF && key->num_child_ == 3) { key = key->children_[2]; }
+        if (key == nullptr || value == nullptr) { throw std::invalid_argument("invalid file option"); }
+        ObString key_name(static_cast<int32_t>(key->str_len_), key->str_value_);
+        if (jsonl && key_name.case_compare("format") == 0 && value->type_ == T_VARCHAR
+            && ObString(static_cast<int32_t>(value->str_len_), value->str_value_).case_compare("newline_delimited") == 0) {
+        } else if (!jsonl && key_name.case_compare("header") == 0 && (value->type_ == T_BOOL || (value->type_ == T_INT && (value->value_ == 0 || value->value_ == 1)))) {
+          header = value->value_ != 0;
+        } else if ((key_name.case_compare("delim") == 0 || key_name.case_compare("delimiter") == 0)
+                   && value->type_ == T_VARCHAR && value->str_len_ == 1) {
+          delimiter = value->str_value_[0];
+        } else if (!jsonl && (key_name.case_compare("quote") == 0 || key_name.case_compare("escape") == 0)
+                   && value->type_ == T_VARCHAR && value->str_len_ == 1) {
+          if (key_name.case_compare("quote") == 0) { quote = value->str_value_[0]; }
+          else { escape = value->str_value_[0]; }
+        } else if (!jsonl && (key_name.case_compare("nullstr") == 0 || key_name.case_compare("null_string") == 0)
+                   && value->type_ == T_VARCHAR && value->str_len_ <= 1024) {
+          null_text.assign(value->str_value_,value->str_len_);
+        } else if (key_name.case_compare("sample_size") == 0) {
+          // The parser represents negative constants as a unary minus expression.
+          const bool all = (value->type_ == T_INT && value->value_ == -1)
+            || (value->type_ == T_OP_NEG && value->num_child_ == 1
+                && value->children_[0]->type_ == T_INT && value->children_[0]->value_ == 1);
+          if (!all) { ret = OB_NOT_SUPPORTED; }
+        } else {
+          throw std::invalid_argument("unsupported file option");
+        }
+      }
+      if (OB_SUCC(ret)) {
+        const ParseNode *path_node = file_sql::bound_constant(params_,args->children_[0]);
+        if (path_node->type_ != T_VARCHAR) { throw std::invalid_argument("file path must be a string"); }
+        const auto root = file_sql::path_from_utf8(std::string(allowed.ptr(), allowed.length()));
+        const auto requested = file_sql::path_from_utf8(std::string(path_node->str_value_, path_node->str_len_));
+        const auto path = glob ? file_sql::authorize_glob(requested, root)
+                               : file_sql::authorize_input(requested, root, enabled);
+        file_sql::FileSnapshot snapshot{0, {}};
+        file_sql::CsvSchema schema;
+        if (glob) {
+          schema.names = {"file"};
+          schema.types = {file_sql::ScalarType::Varchar};
+          schema.nullable = {false};
+          schema.temporal_scales = {0};
+        } else {
+          snapshot = file_sql::FileSnapshot::capture(path);
+          file_sql::SecureInputStream input(path, root);
+          if (!input) { throw std::runtime_error("cannot open file input"); }
+          schema = parquet ? file_sql::parquet_detail::metadata(input).schema
+                           : jsonl ? file_sql::infer_jsonl(input) : file_sql::infer_csv(input, header, delimiter, quote, escape, null_text);
+          snapshot.verify(path);
+        }
+        if (schema.names.empty()) { throw std::invalid_argument("cannot infer columns from empty file"); }
+        const std::string path_text = file_sql::utf8_path_text(path);
+        ObString copied_path;
+        ObString path_value(static_cast<int32_t>(path_text.size()), path_text.data());
+        if (OB_FAIL(ob_write_string(*allocator_, path_value, copied_path))) {
+        } else if (OB_FAIL(ObRawExprUtils::build_const_string_expr(*params_.expr_factory_, ObVarcharType,
+                            copied_path, CS_TYPE_UTF8MB4_BIN, path_expr))) {
+        } else if (OB_ISNULL(item = get_stmt()->create_table_item(*allocator_))) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+        } else {
+          item->type_ = TableItem::FUNCTION_TABLE;
+          item->is_file_table_ = true;
+          get_stmt()->get_query_ctx()->has_file_sql_ = true;
+          item->file_format_ = parquet ? 3 : glob ? 2 : jsonl ? 1 : 0;
+          item->file_header_ = header;
+          item->file_delimiter_ = delimiter;
+          item->file_quote_ = quote;
+          item->file_escape_ = escape;
+          ObString null_value(static_cast<int32_t>(null_text.size()),null_text.data());
+          OZ (ob_write_string(*allocator_,null_value,item->file_null_text_));
+          item->file_size_ = snapshot.size;
+          item->file_mtime_ = snapshot.modified.time_since_epoch().count();
+          item->file_device_ = snapshot.device; item->file_identity_ = snapshot.identity;
+          item->file_changed_ = snapshot.changed; item->file_changed_fraction_ = snapshot.changed_fraction;
+          item->function_table_expr_ = path_expr;
+          item->table_id_ = generate_table_id();
+          ObString alias_name = alias == nullptr ? name
+              : ObString(static_cast<int32_t>(alias->str_len_), alias->str_value_);
+          OZ (ob_write_string(*allocator_, alias_name, item->table_name_));
+          item->alias_name_ = item->table_name_;
+          OZ (get_stmt()->add_table_item(session_info_, item));
+          for (std::size_t i = 0; OB_SUCC(ret) && i < schema.names.size(); ++i) {
+            ObObjMeta meta;
+            switch (schema.types[i]) {
+              case file_sql::ScalarType::Null: meta.set_null(); break;
+              case file_sql::ScalarType::Bigint: meta.set_int(); break;
+              case file_sql::ScalarType::Double: meta.set_double(); break;
+              case file_sql::ScalarType::Boolean: meta.set_tinyint(); break;
+              case file_sql::ScalarType::Date: meta.set_date(); break;
+              case file_sql::ScalarType::Datetime: meta.set_datetime(); break;
+              default: meta.set_varchar(); meta.set_collation_type(CS_TYPE_UTF8MB4_BIN);
+                       meta.set_collation_level(CS_LEVEL_IMPLICIT); break;
+            }
+            ObString column_name;
+            ObString source_name(static_cast<int32_t>(schema.names[i].size()), schema.names[i].data());
+            ColumnItem *column = nullptr;
+            OZ (ob_write_string(*allocator_, source_name, column_name));
+            ObAccuracy accuracy = ObAccuracy::DDL_DEFAULT_ACCURACY[meta.get_type()];
+            if (meta.get_type() == ObVarcharType) { accuracy.set_length(16*1024*1024); }
+            if (meta.get_type() == ObDateTimeType) { accuracy.set_scale(schema.temporal_scales[i]); }
+            OZ (resolve_function_table_column_item(*item, meta,
+                  accuracy, column_name,
+                  OB_APP_MIN_COLUMN_ID + i, column));
+            if (OB_SUCC(ret) && !schema.nullable[i]) { column->expr_->set_result_flag(NOT_NULL_FLAG); }
+          }
+          table_item = item;
+        }
+      }
+    } catch (const std::exception &error) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("file SQL inference failed", K(ret), "detail", error.what());
+      LOG_USER_ERROR(OB_INVALID_ARGUMENT,error.what());
+    }
+  }
+  return ret;
+}
+
 int ObDMLResolver::resolve_hybrid_search_item(const ParseNode &parse_tree, TableItem *&table_item)
 {
   INIT_SUCC(ret);
@@ -7475,7 +7642,14 @@ int ObDMLResolver::resolve_function_table_column_item(const TableItem &table_ite
   CK (OB_LIKELY(table_item.is_function_table()));
   CK (OB_NOT_NULL(table_item.function_table_expr_));
   if (OB_SUCC(ret)) {
-    if (table_item.function_table_expr_->get_result_type().is_ext()) {
+    if (table_item.is_file_table_) {
+      for (int64_t i = 0; OB_SUCC(ret) && i < get_stmt()->get_column_size(); ++i) {
+        const ColumnItem *column = get_stmt()->get_column_item(i);
+        if (column->table_id_ == table_item.table_id_) {
+          OZ (col_items.push_back(*column));
+        }
+      }
+    } else if (table_item.function_table_expr_->get_result_type().is_ext()) {
       ret = resolve_function_table_column_item_udf(table_item, col_items);
     } else {
       ret = resolve_function_table_column_item_sys_func(table_item, col_items);

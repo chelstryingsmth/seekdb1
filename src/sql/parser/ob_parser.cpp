@@ -857,7 +857,7 @@ int ObParser::parse_sql(const ObString &stmt,
     }
 #endif
     if (!no_throw_parser_error) {
-      LOG_INFO("failed to parse stmt as sql", K(stmt_str), K(ret));
+      LOG_INFO("failed to parse stmt as sql", K(stmt_str), K(ret), "detail", parse_result.error_msg_);
     }
   } else if (parse_result.is_dynamic_sql_) {
     memmove(parse_result.no_param_sql_ + parse_result.no_param_sql_len_,

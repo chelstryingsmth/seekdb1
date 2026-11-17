@@ -28,6 +28,7 @@ namespace oceanbase
 {
 namespace sql
 {
+struct FileCopyState;
 class ObSelectIntoOpInput : public ObOpInput
 {
   OB_UNIS_VERSION_V(1);
@@ -71,7 +72,7 @@ public:
       parallel_(1),
       buffer_size_(DEFAULT_BUFFER_SIZE),
       is_overwrite_(false),
-      external_properties_(alloc)
+      external_properties_(alloc), is_file_copy_(false), copy_header_(false), copy_column_names_(alloc)
   {
   }
 
@@ -91,6 +92,10 @@ public:
   int64_t buffer_size_;
   bool is_overwrite_;
   ObExternalFileFormat::StringData external_properties_;
+  bool is_file_copy_;
+  bool copy_header_;
+  common::ObString copy_null_text_;
+  common::ObFixedArray<common::ObString, common::ObIAllocator> copy_column_names_;
   static const int64_t DEFAULT_MAX_FILE_SIZE = 256LL * 1024 * 1024;
   static const int64_t DEFAULT_BUFFER_SIZE = 1LL * 1024 * 1024;
 };
@@ -100,6 +105,7 @@ class ObSelectIntoOp : public ObOperator
 public:
   ObSelectIntoOp(ObExecContext &exec_ctx, const ObOpSpec &spec, ObOpInput *input)
     : ObOperator(exec_ctx, spec, input),
+      copy_state_(nullptr),
       top_limit_cnt_(INT64_MAX),
       is_first_(true),
       field_str_(),
@@ -264,6 +270,10 @@ private:
   bool file_need_split(int64_t file_size);
 
 private:
+  FileCopyState *copy_state_;
+  int open_file_copy();
+  int drive_file_copy();
+  void close_file_copy();
   int64_t top_limit_cnt_;
   bool is_first_;
   ObObj field_str_;
