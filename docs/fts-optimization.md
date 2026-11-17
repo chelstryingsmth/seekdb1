@@ -19,6 +19,11 @@ profiles. They are intended to reduce normalization work and allocation counts
 for the English tokenizer; the actual full-text index/build/query impact must
 be checked by running the benchmark.
 
+The IK per-character dispatch now passes the previously computed character,
+byte length, and character category directly to each processor. Previously the
+same values were fetched again by each of four processors for every character;
+the processor order and `do_process` implementations are unchanged.
+
 Regression: run the fts_index ik_char_classification and beng_fast_path mysqltests
 along with the existing fts_index suite. The IK case checks token/frequency
 output across separator categories, including four-byte UTF-8; the BENG case

@@ -1,5 +1,7 @@
 name: FTS submission validation
 on:
+  push:
+    branches: [competition-fts-optimized-v3]
   pull_request:
     branches: [2026-competition]
   workflow_dispatch:
