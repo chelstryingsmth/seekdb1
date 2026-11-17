@@ -39,6 +39,8 @@ public:
       english_analyzer_(),
       doc_(),
       token_stream_(nullptr),
+      token_block_next_(nullptr),
+      token_block_remaining_(0),
       is_inited_(false)
   {}
   ~ObBEngFTParser() { reset(); }
@@ -62,6 +64,10 @@ private:
   share::ObEnglishTextAnalyzer english_analyzer_;
   common::ObDatum doc_;
   share::ObITokenStream *token_stream_;
+  // Tokens must remain readable after subsequent get_next_token() calls.
+  // Keep them in allocator-owned blocks instead of allocating per word.
+  char *token_block_next_;
+  int64_t token_block_remaining_;
   bool is_inited_;
 
   DISALLOW_COPY_AND_ASSIGN(ObBEngFTParser);

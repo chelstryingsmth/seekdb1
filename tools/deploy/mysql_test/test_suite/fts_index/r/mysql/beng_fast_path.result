@@ -1,0 +1,9 @@
+SELECT TOKENIZE('abcdef', 'beng') = TOKENIZE('ABCDEF', 'beng') AS lowercase_ascii;
+lowercase_ascii
+1
+SELECT TOKENIZE('abc123 abc123', 'beng') = TOKENIZE('ABC123 ABC123', 'beng') AS repeated_words;
+repeated_words
+1
+SELECT TOKENIZE('hello world', 'beng') = TOKENIZE('HELLO!WORLD', 'beng') AS punctuation_boundary;
+punctuation_boundary
+1

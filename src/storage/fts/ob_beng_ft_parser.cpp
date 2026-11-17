@@ -35,7 +35,6 @@ int ObBEngFTParser::get_next_token(
   int ret = OB_SUCCESS;
   ObDatum token;
   int64_t token_freq = 0;
-  char *buf = nullptr;
   word = nullptr;
   word_len = 0;
   char_len = 0;
@@ -49,15 +48,29 @@ int ObBEngFTParser::get_next_token(
     }
   } else if (OB_ISNULL(token.ptr_) || OB_UNLIKELY(0 >= token.len_ || 0 >= token_freq)) {
     ret = OB_INVALID_ARGUMENT;
-  } else if (OB_ISNULL(buf = static_cast<char *>(allocator_.alloc(token.len_)))) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
   } else {
-    MEMCPY(buf, token.ptr_, token.len_);
-    word = buf;
-    word_len = token.len_;
-    char_len = token.len_;
-    word_freq = token_freq;
-    LOG_DEBUG("succeed to add word", K(ObString(word_len, word)), K(word_freq));
+    if (token.len_ > token_block_remaining_) {
+      // One small allocation serves many words. Cap the usual block size so
+      // very large documents do not cause a whole-document copy up front.
+      const int64_t doc_block_size = doc_.len_ < 4096 ? doc_.len_ : 4096;
+      const int64_t block_size = token.len_ > doc_block_size ? token.len_ : doc_block_size;
+      if (OB_ISNULL(token_block_next_ = static_cast<char *>(allocator_.alloc(block_size)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+      } else {
+        token_block_remaining_ = block_size;
+      }
+    }
+    if (OB_SUCC(ret)) {
+      char *buf = token_block_next_;
+      MEMCPY(buf, token.ptr_, token.len_);
+      token_block_next_ += token.len_;
+      token_block_remaining_ -= token.len_;
+      word = buf;
+      word_len = token.len_;
+      char_len = token.len_;
+      word_freq = token_freq;
+      LOG_DEBUG("succeed to add word", K(ObString(word_len, word)), K(word_freq));
+    }
   }
   return ret;
 }
@@ -110,6 +123,8 @@ void ObBEngFTParser::reset()
   english_analyzer_.reset();
   doc_.reset();
   token_stream_ = nullptr;
+  token_block_next_ = nullptr;
+  token_block_remaining_ = 0;
   is_inited_ = false;
 }
 

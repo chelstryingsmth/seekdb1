@@ -247,6 +247,7 @@ int ObBasicEnglishNormalizer::get_next(ObDatum &next_token, int64_t &token_freq)
     norm_allocator_.reuse();
     ObDatum tmp_datum;
     bool found_alnum = false;
+    bool ascii_already_normalized = false;
     uint32_t norm_token_len = 0;
     const char *norm_token_ptr = nullptr;
     while (OB_SUCC(ret) && !found_alnum) {
@@ -258,33 +259,47 @@ int ObBasicEnglishNormalizer::get_next(ObDatum &next_token, int64_t &token_freq)
         // trim leading and trailing non-alnum characters
         const char *token = tmp_datum.ptr_;
         const uint32_t raw_token_len = tmp_datum.len_;
-        uint32_t first_alnum_pos = 0;
-        uint32_t last_alnum_pos = raw_token_len - 1;
-        for (uint32_t i = 0; i < raw_token_len; ++i) {
-          const char *character = token + i;
-          if (ob_isalnum(cs_, *character)) {
-            first_alnum_pos = i;
-            found_alnum = true;
-            break;
-          }
+        // Common case: lower-case ASCII letters and digits need neither
+        // trimming nor case conversion. The input document stays alive for
+        // the duration of the analyzer, so its bytes are safe to borrow.
+        ascii_already_normalized = raw_token_len > 0;
+        for (uint32_t i = 0; ascii_already_normalized && i < raw_token_len; ++i) {
+          const unsigned char ch = static_cast<unsigned char>(token[i]);
+          ascii_already_normalized = (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9');
         }
-
-        for (int32_t i = raw_token_len - 1; 0 <= i && i < raw_token_len && i >= first_alnum_pos; --i) {
-          const char *character = token + i;
-          if (ob_isalnum(cs_, *character)) {
-            last_alnum_pos = i;
-            found_alnum = true;
-            break;
-          }
-        }
-
-        if (!found_alnum) {
-          // skip
-        } else if (OB_UNLIKELY(last_alnum_pos < first_alnum_pos)) {
-          ret = OB_ERR_UNEXPECTED;
+        if (ascii_already_normalized) {
+          found_alnum = true;
+          norm_token_len = raw_token_len;
+          norm_token_ptr = token;
         } else {
-          norm_token_len = last_alnum_pos - first_alnum_pos + 1;
-          norm_token_ptr = token + first_alnum_pos;
+          uint32_t first_alnum_pos = 0;
+          uint32_t last_alnum_pos = raw_token_len - 1;
+          for (uint32_t i = 0; i < raw_token_len; ++i) {
+            const char *character = token + i;
+            if (ob_isalnum(cs_, *character)) {
+              first_alnum_pos = i;
+              found_alnum = true;
+              break;
+            }
+          }
+
+          for (int32_t i = raw_token_len - 1; 0 <= i && i < raw_token_len && i >= first_alnum_pos; --i) {
+            const char *character = token + i;
+            if (ob_isalnum(cs_, *character)) {
+              last_alnum_pos = i;
+              found_alnum = true;
+              break;
+            }
+          }
+
+          if (!found_alnum) {
+            // skip
+          } else if (OB_UNLIKELY(last_alnum_pos < first_alnum_pos)) {
+            ret = OB_ERR_UNEXPECTED;
+          } else {
+            norm_token_len = last_alnum_pos - first_alnum_pos + 1;
+            norm_token_ptr = token + first_alnum_pos;
+          }
         }
       }
     }
@@ -292,6 +307,8 @@ int ObBasicEnglishNormalizer::get_next(ObDatum &next_token, int64_t &token_freq)
     if (OB_FAIL(ret)) {
     } else if (OB_UNLIKELY(!found_alnum)) {
       ret = OB_ERR_UNEXPECTED;
+    } else if (ascii_already_normalized) {
+      next_token.set_string(norm_token_ptr, norm_token_len);
     } else {
       ObString norm_alnum_token(norm_token_len, norm_token_ptr);
       ObString norm_lower_token;

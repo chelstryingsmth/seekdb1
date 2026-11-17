@@ -28,6 +28,13 @@ jobs:
           mysql -h127.0.0.1 -P2881 -uroot -N -s -A --default-character-set=utf8mb4 < tools/deploy/mysql_test/test_suite/fts_index/t/ik_char_classification.test | tee /tmp/ik-results
           test "$(wc -l < /tmp/ik-results)" -eq 5
           test "$(grep -cx 1 /tmp/ik-results)" -eq 5
+      - name: Check English tokenizer regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mysql -h127.0.0.1 -P2881 -uroot -N -s -A --default-character-set=utf8mb4 < tools/deploy/mysql_test/test_suite/fts_index/t/beng_fast_path.test | tee /tmp/beng-results
+          test "$(wc -l < /tmp/beng-results)" -eq 3
+          test "$(grep -cx 1 /tmp/beng-results)" -eq 3
       - name: Run unchanged full competition benchmark
         env:
           MYSQL: mysql -h127.0.0.1 -P2881 -uroot -N -s -A --default-character-set=utf8mb4
@@ -50,6 +57,7 @@ jobs:
           name: fts-validation
           path: |
             /tmp/ik-results
+            /tmp/beng-results
             /tmp/fts-report.txt
             /tmp/fts-score.txt
             ${{ runner.temp }}/fts-instance/log/

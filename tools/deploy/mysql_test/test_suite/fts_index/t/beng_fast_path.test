@@ -1,0 +1,5 @@
+# owner group: storage
+# The ASCII fast path must match normal case folding and token boundaries.
+SELECT TOKENIZE('abcdef', 'beng') = TOKENIZE('ABCDEF', 'beng') AS lowercase_ascii;
+SELECT TOKENIZE('abc123 abc123', 'beng') = TOKENIZE('ABC123 ABC123', 'beng') AS repeated_words;
+SELECT TOKENIZE('hello world', 'beng') = TOKENIZE('HELLO!WORLD', 'beng') AS punctuation_boundary;
